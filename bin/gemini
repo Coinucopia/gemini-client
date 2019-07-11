@@ -95,7 +95,7 @@ function generateProgress(total, completed) {
 }
 
 function generateTradesTable(trades, type) {
-	let baseHeaders = [ "Date", "", "Amount", "Target price", "Progress" ];
+	let baseHeaders = [ "Date", " ", "Amount", "Target price", "Progress" ];
 
 	let headers = (type === "active")
 		? baseHeaders.concat([ "Amount completed" ])
@@ -126,7 +126,7 @@ function generateTradesTable(trades, type) {
 
 		return (type === "active")
 			? baseData.concat([
-				(executedAmount != null) ? `${executedAmount.toString()} ${currency}` : ""
+				(executedAmount != null) ? `${executedAmount.toString()} ${currency}` : " "
 			])
 			: baseData.concat([
 				(trade.aggressor === true) ? "Taker" : "Maker",
