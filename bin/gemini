@@ -53,7 +53,30 @@ let yargsConfig = yargs
 		return orderOptions(yargs);
 	});
 
+let allowedKeys = new Set([
+	"_", "$0",
+	"immediate",
+	"immediateFull",
+	"immediate-full",
+	"immediateOrCancel",
+	"immediate-or-cancel",
+	"makerOrCancel",
+	"maker-or-cancel",
+	"postOnly",
+	"post-only",
+	"fillOrKill",
+	"fill-or-kill"
+]);
+
 let args = yargsConfig.argv;
+
+for (let key of Object.keys(args)) {
+	if (!allowedKeys.has(key)) {
+		yargsConfig.showHelp();
+		console.log(chalk.bold.red(`\nUnrecognized flag: ${key}`))
+		process.exit(1);
+	}
+}
 
 let command = args._[0];
 
@@ -244,7 +267,7 @@ return Promise.try(() => {
 				console.log("");
 			}
 		});
-	}	
+	}
 }).catch({ name: "ParsingError" }, (err) => {
 	yargsConfig.showHelp();
 	console.error("");
