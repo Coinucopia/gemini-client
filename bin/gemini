@@ -3,7 +3,7 @@
 "use strict";
 
 const Promise = require("bluebird");
-const GeminiAPI = require("gemini-api").default;
+const GeminiAPI = require("@joepie91/gemini-api").default;
 const BigNumber = require("bignumber.js");
 const yargs = require("yargs");
 const chalk = require("chalk");
@@ -22,6 +22,8 @@ let client = new GeminiAPI({
 	secret: config.api.secret,
 	sandbox: config.api.sandbox
 });
+
+const getFees = require("../lib/get-fees")({ client });
 
 function orderOptions(yargs) {
 	return yargs
@@ -117,14 +119,23 @@ function generateProgress(total, completed) {
 	return `${"▓".repeat(progressBlocks)}${"░".repeat(8 - progressBlocks)} ${progress.times(100).decimalPlaces(0).toString().padStart(3)}%`;
 }
 
-function generateTradesTable(trades, type) {
+function maybeBigNumber(value) {
+	if (value == null) {
+		return value;
+	} else {
+		return new BigNumber(value);
+	}
+}
+
+function generateTradesTable(trades, type, currentFees) {
+	/* bps = hundredth of a percent, multiplier = between 0 and 1, so multiplier = bps * 0.01 * 0.01 = bps * 0.0001 */
+	let makerFeeMultiplier = (new BigNumber(currentFees.api_maker_fee_bps)).times(0.0001);
+
 	let baseHeaders = [ "Date", " ", "Amount", "Target price", "Progress" ];
 
 	let headers = (type === "active")
-		? baseHeaders.concat([ "Amount completed" ])
+		? baseHeaders.concat([ "Amount completed", "Estimated fee" ])
 		: baseHeaders.concat([ "Side", "Fee paid" ])
-	// Date / Direction / Amount (in BTC) / Price / Progress / Average execution price
-	//   price -- <= and => depending on direction
 	
 	let formattedHeaders = headers.map((text) => chalk.bold(text));
 
@@ -134,40 +145,50 @@ function generateTradesTable(trades, type) {
 			: trade.type.toLowerCase();
 
 		let currency = trade.symbol.replace("usd", "").toUpperCase();
+		let price = trade.price;
 		let amount = new BigNumber(defaultValue(trade.original_amount, trade.amount));
+		let amountInDollars = amount.times(price);
 		let priceQualifier = (direction === "buy") ? "<=" : ">=";
-		let executedAmount = (trade.executed_amount != null) ? new BigNumber(trade.executed_amount) : null;
+		let executedAmount = maybeBigNumber(trade.executed_amount);
+		let feeCurrency = defaultValue(trade.fee_currency, "USD");
+		let estimatedFee = amountInDollars.times(makerFeeMultiplier);
+		let actualFee = maybeBigNumber(trade.fee_amount);
+		let feePercentage = `${defaultValue(actualFee, estimatedFee).div(amountInDollars).times(100).toFixed(3)}%`;
+
 		// let averageExecutionPrice = (trade.avg_execution_price !== "0.00") ? trade.avg_execution_price : null;
 
 		let baseData = [
 			dateFns.format(new Date(trade.timestampms), "MM-DD-YYYY HH:mm:ss"),
 			direction,
 			`${amount.toString()} ${currency}`,
-			`${priceQualifier} $${trade.price}`,
+			`${priceQualifier} $${price}`,
 			generateProgress(amount, executedAmount)
 		];
 
 		return (type === "active")
 			? baseData.concat([
-				(executedAmount != null) ? `${executedAmount.toString()} ${currency}` : " "
+				(executedAmount != null) ? `${executedAmount.toString()} ${currency}` : " ",
+				`$${estimatedFee.toFixed(2)} (${feePercentage})`
 			])
 			: baseData.concat([
 				(trade.aggressor === true) ? "Taker" : "Maker",
-				`${trade.fee_currency} ${trade.fee_amount}`
+				(feeCurrency === "USD")
+					? `$${actualFee.toFixed(2)} (${feePercentage})`
+					: `${feeCurrency} ${actualFee.toFixed(2)} (${feePercentage})`
 			]);
 	})));
 }
 
-function printActiveTrades(trades) {
+function printActiveTrades(trades, fees) {
 	console.log(chalk.bold("Active trades:"));
 	console.log("");
-	console.log(generateTradesTable(trades, "active"));
+	console.log(generateTradesTable(trades, "active", fees));
 }
 
-function printPastTrades(trades) {
+function printPastTrades(trades, fees) {
 	console.log(chalk.bold("Past trades:"));
 	console.log("");
-	console.log(generateTradesTable(trades, "past"));
+	console.log(generateTradesTable(trades, "past", fees));
 }
 
 return Promise.try(() => {
@@ -175,13 +196,14 @@ return Promise.try(() => {
 		return Promise.try(() => {
 			return Promise.all([
 				client.getMyActiveOrders(),
-				getAllPastTrades()
+				getAllPastTrades(),
+				getFees()
 			]);
-		}).then(([ activeOrders, pastTrades ]) => {
+		}).then(([ activeOrders, pastTrades, fees ]) => {
 			console.log("");
-			printActiveTrades(activeOrders);
+			printActiveTrades(activeOrders, fees);
 			console.log("");
-			printPastTrades(pastTrades);
+			printPastTrades(pastTrades, fees);
 		});
 	} else if (command === "buy" || "sell") {
 		/*
@@ -234,8 +256,11 @@ return Promise.try(() => {
 		};
 		
 		return Promise.try(() => {
-			return client.newOrder(order);
-		}).then((result) => {
+			return Promise.all([
+				client.newOrder(order),
+				getFees()
+			]);
+		}).then(([ result, fees ]) => {
 			console.log("");
 
 			if (result.is_cancelled) {
@@ -245,7 +270,7 @@ return Promise.try(() => {
 			}
 
 			console.log("");
-			console.log(generateTradesTable([ result ], "active"));
+			console.log(generateTradesTable([ result ], "active", fees));
 
 			if (result.is_cancelled) {
 				let cancellationMode = "The order was cancelled.";
